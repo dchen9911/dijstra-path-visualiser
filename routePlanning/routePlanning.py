@@ -1,24 +1,28 @@
 # TO DO: incorporate a list of waypoints that have to be followed
-# Make it not recursion
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
-from matplotlib.path import Path
 import matplotlib.patches as patches
-from descartes import PolygonPatch
-from shapely.geometry.polygon import LinearRing, Polygon
-from shapely.geometry import Point
 import shapely
 import time
 import random
 import math
+import sys
+import argparse
+
+from minHeap import MinHeap
+from matplotlib.path import Path
+from descartes import PolygonPatch
+from shapely.geometry.polygon import LinearRing, Polygon
+from shapely.geometry import Point
+
 from gridPoint import gridPoint
 
 NO_FLY_ZONE_BOUNDARY_SIZE = 2
-WIDTH = 1000
-HEIGHT = 1000
-POLYGON_NUMBER = 30
-POLYGON_SIZE = 40
+WIDTH = 100
+HEIGHT = 100
+POLYGON_NUMBER = 15
+POLYGON_SIZE = 9
 
 class routePlanning:
     def __init__(self):
@@ -63,11 +67,9 @@ class routePlanning:
         ax.add_patch(flyZonePatch)
         #plt.show()
 
-        
-
     # greedyish method that tries to always move closer to endpoint if possible
     # startPoint and endPoint are tuples of floats representing coords in the form (x,y)
-    def planRoute(self, startPoint, endPoint):
+    def planRoute(self, startPoint, endPoint, method = 'g'):
         # pre-process all points and check how far away they are from the endpoint
         # this block can be moved to init
         self.gridDistances = 2*max(self.height, self.width)*np.ones((self.height, self.width)) # initialise them as very far away
@@ -77,8 +79,81 @@ class routePlanning:
         
         self.prevPositions = []
         self.prevPositions.append(startPoint)
-        count = 0
+        if method == 'd':
+            self.dijkstraFindPath(endPoint)
+        else:
+            self.greedyFindPath(endPoint)
+
+        # now lets show the path
+        xvals = [row[0] for row in self.prevPositions]
+        yvals = [row[1] for row in self.prevPositions]
+        # print(xvals)
+        # print(yvals)
         
+        plt.plot(xvals,yvals,'.-')
+        plt.show()
+        return
+
+    def dijkstraFindPath(self, endPoint):
+        startPoint = self.prevPositions[-1]
+        self.grid[startPoint[1]][startPoint[0]].setDistance(0)
+        pq = MinHeap()
+        # create the priority queue
+        count = 0
+        for x in range(0, WIDTH):
+            for y in range (0, HEIGHT):
+                self.grid[y][x].setDistance(self.grid[y][x].getDistance() + count)
+                pq.insert(self.grid[y][x], self.grid[y][x].getDistance())
+                count = count + 1
+        
+        while pq.counter != 0:
+            currGridPoint = pq.del_min()
+            if currGridPoint.getDistance() > 1000000: # these are the points that cannot be reached from the start point
+                break
+            currGridPoint.visit()
+            currX = currGridPoint.x
+            currY = currGridPoint.y
+
+            # go through all the neighbours of the current point
+            for x in range(currX - 1, currX + 2):
+                for y in range(currY - 1, currY + 2): 
+                    currPos = (x,y)
+                    if x < 0 or x >= WIDTH or y < 0 or y >= HEIGHT or self.grid[y][x].beenVisited(): # check if we've already visited or out of bounds
+                        continue
+                    continueFlag = False
+                    for noFlyZone in self.softNoFlyZones: # check to see if point is in a no fly zone or not within the yes fly zone
+                        if noFlyZone.contains(Point(currPos)):
+                            continueFlag = True
+                            break
+                    if continueFlag:
+                        continue
+                    if not self.flyZone.contains(Point(currPos)):
+                        continue
+                    
+                    currPoint = self.grid[y][x]
+                    oldDist = currPoint.getDistance()
+                    newDist = currGridPoint.getDistance() + (abs(x - currX)**2 + abs(y - currY)**2) ** 0.5
+                    if newDist < oldDist:
+                        currPoint.setDistance(newDist)
+                        pq.insert(currPoint, currPoint.getDistance())
+                        currPoint.setParent(currGridPoint)
+        
+        endGridPoint = self.grid[endPoint[1]][endPoint[0]]
+        if endGridPoint.getDistance() > 1000000:
+            print("no path could be found")
+            return
+        startGridPoint = self.grid[startPoint[1]][startPoint[0]]
+        while endGridPoint != startGridPoint:
+            self.prevPositions.append((endGridPoint.x, endGridPoint.y))
+            endGridPoint = endGridPoint.getParent()
+        del self.prevPositions[0]
+        self.prevPositions.append(startPoint)
+
+        
+
+    def greedyFindPath(self,endPoint):
+        count = 0
+            
         # bulk of the path finding
         while True:
             if count > 20000: # some arbitrarily large number after which a solution probs doesnt exist
@@ -126,56 +201,15 @@ class routePlanning:
 
             count = count + 1
         print("count: " + str(count))
-        # now lets show the path
-        xvals = [row[0] for row in self.prevPositions]
-        yvals = [row[1] for row in self.prevPositions]
-        # print(xvals)
-        # print(yvals)
-        plt.plot(xvals,yvals,'.-')
-        plt.show()
         return
-
-        
-
-    def getNextMove(self, endPoint):
-        # check if current point is either endPoint or inside a polygon
-        currPos = self.prevPositions[-1]
-        if currPos == endPoint:
-            return 1
-        else:
-            for noFlyZone in self.softNoFlyZones:
-                if noFlyZone.contains(Point(currPos)):
-                    del self.prevPositions[-1] # remove the previous addition to the list
-                    return 0
-            if not self.flyZone.contains(Point(currPos)):
-                del self.prevPositions[-1] # remove the previous addition to the list
-                return 0
-        possibleMovesAndDistance = []
-        # get the distance from end point 
-        for x in range(currPos[0] - 1, currPos[0] + 2):
-            for y in range(currPos[1] - 1, currPos[1] + 2): 
-                if (x,y) in self.prevPositions or x < 0 or x >= WIDTH or y < 0 or y >= HEIGHT: # check if we've already visited or out of bounds
-                    continue
-                possibleMovesAndDistance.append([(x,y), self.gridDistances[y][x]])
-                
-        possibleMovesAndDistance.sort(key = lambda x:x[1]) # sort in ascending order
-
-        # do the move which will get us closer to the endpoint
-        for move in possibleMovesAndDistance:
-            self.prevPositions.append(move[0])
-            ret = self.getNextMove(endPoint)
-            if ret == 0: # if no path was found, then go to the next possible point
-                continue 
-            else:
-                return 1
-        del self.prevPositions[-1]
-        return 0 # means no path was viable
 
 def generateRandomNoFlyZones(n, size):
     zones = []
     for i in range(0,n):
-        x = random.randrange(20,WIDTH)
-        y = random.randrange(20,HEIGHT)
+        x = random.randrange(5,WIDTH)
+        y = random.randrange(5,HEIGHT)
+        if x < 20 and y < 20:
+            continue
         nSides = np.random.normal(5, 1.5)
         nSides = round(nSides)
         if nSides < 3:
@@ -190,28 +224,28 @@ def generateRandomNoFlyZones(n, size):
         zones.append(zone)
     return zones
 
-
-
-
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Plans the route')
+    parser.add_argument('-d', '--dijkstra', required=False, help='Use dijsktra rather than greedy', action='store_true')
+    args = vars(parser.parse_args())
 
     routePlanningObj = routePlanning()
     flyZone = [(1,1),(WIDTH,5), (WIDTH,HEIGHT), (5,HEIGHT)]
     noFlyZones = generateRandomNoFlyZones(POLYGON_NUMBER,POLYGON_SIZE)
     print(noFlyZones)
-    #noFlyZones = [[(59.624414898112555, 81.40174607023728), (48.02314508819377, 86.59592378878118), (46.90299059872611, 71.39634435353503)], [(57.18027931634997, 38.29001668965869), (54.43530039767146, 45.63074538319422), (45.77066613734521, 42.756003445104355), (39.01808576676231, 44.92030294411203), (44.28385323609244, 40.08653747880057), (46.503672945158016, 36.38594001067716)], [(98.81836843413275, 72.93312811681439), (89.49513227037139, 78.85007976195699), (86.66596222903695, 66.90546112788763)], [(50.08481320568391, 35.72503611414005), (46.43885653343638, 39.31218583752805), (42.47651286590404, 32.59072582880941), (49.83985333606208, 32.69209160988164), (53.096603378125245, 35.713044556972235)], [(32.111308316264136, 40.172565718451814), (26.73136507047328, 42.835460210070885), (25.122587698977625, 42.703857181492054), (21.39047571307746, 46.172813386371416), (19.196345767308735, 43.05345996493098), (19.186660556856463, 35.237004304638816), (27.871139499357735, 32.43238753279634)]]
     routePlanningObj.createMap(flyZone, noFlyZones)
-    routePlanningObj.planRoute((2,2), (WIDTH - 3, HEIGHT - 3))
+    if args['dijkstra']:
+        routePlanningObj.planRoute((2,2), (WIDTH - 3, HEIGHT - 3), 'd')
+    else:
+        routePlanningObj.planRoute((2,2), (WIDTH - 3, HEIGHT - 3))
+
 
 """
-    noFlyZones = [
-        [(5,7), (6,17), (20,22), (9,7)],
-        [(40,40), (60,40), (60,60), (40,60)],
-        [(20,40), (25,40), (25,45),(20,45)],
-        [(5,0), (10,0),(10,5),(5,5)],
-        [(-6, 5), (-1,5), (-1,10),(-5,10)]
-    ]
-    """
-    
+    noFlyZones = [[(32.76760500804986, 70.0209447504084), (25.09857190136023, 70.35169643515728), (25.633972949409838, 64.02954970830679)], [(76.70901348460869, 80.7172212972922), (74.2498524330669, 87.57687919565643), (68.07951516028578, 81.79841208262137), (75.1509579124204, 76.85843762819239)], [(90.42780350790925, 57.9356399802175), (88.11299074654477, 63.18770183628909), (82.13180268211882, 62.96972015261172), (79.98077349792366, 55.58826569962246), (88.22597303154953, 55.852642181400256)], [(59.14031260580107, 44.26734595607289), (52.406314622921855, 51.483493123463894), (50.97922659561319, 44.672402236395904)], [(49.899621903442146, 45.25431039146686), (40.51476093497907, 51.608745469896846), (41.59156697900454, 44.68934798719302)], [(64.54029983130572, 59.56258393850445), (57.95413564087323, 59.68159580000331), (58.75294535062098, 56.41638199239141), (60.84577843030448, 49.98432977837875)], [(67.73850160659585, 65.93095562411187), (66.11465974577946, 68.7792762563866), (64.48720721376512, 64.53263651322936), (59.466733642718076, 63.652616552957554), (62.77107268543308, 61.747653442016144), (66.63149026519632, 61.10239484247401)], [(96.51895249760034, 58.03894738561338), (91.50929620128193, 59.72897718168009), (86.43475315880207, 56.52080963423007), (91.38719422137169, 52.85130826702888)], [(99.52486191086899, 74.3682842147012), (96.96169737705002, 81.24525273042832), (88.27748860514755, 75.07544076475008)],
+[(91.711842072336, 93.17756473801893), (82.6112207560941, 99.54993171325725), (84.09260971329402, 89.58601237075774)], [(56.74181966495754, 33.6704804838274), (48.17934766384963, 36.33683932418062), (51.94660927744403, 26.477845669353076)], [(71.46114218367009, 90.13915193986907), (60.893868646315305, 84.59146699268857), (71.69646807358936, 83.38958025055443)], [(63.738175642292354, 98.1874151878994), (62.55377446512684, 102.3236979226125), (58.58831433550984, 105.20394964977928), (53.77486721669263, 99.26117640296522), (54.56053711210503, 95.86041191462905), (57.608785314939745, 93.81514056006554), (62.2216295469646, 90.8506444461608)], [(51.37840829559036, 36.572376451182194), (47.06022791115201, 42.65927981233223), (42.70121770087547, 36.25378390939924), (42.97621803521859, 32.5347578849977), (49.66619211890273, 30.31341691280898)], [(101.29735844959673, 59.6285250202436), (94.1010833429035, 65.56897857461682), (91.90668704719349,
+60.539639329201755), (93.16955740709525, 58.949033706113774), (97.02107964404848, 55.72033937683914)], [(87.7531045359064, 26.52803907210708), (86.00520997845803, 29.611218460745857), (80.61162131651392, 27.32370195310205), (81.02936359143114, 21.320481724348674), (84.81717191036495, 20.986723297913638)], [(50.36193363550362, 74.38471947051937), (49.44368555239464, 76.70646693837863), (48.626493324122876, 80.50971249271336), (45.78518747418626, 79.874129380561), (40.058474899443574, 73.9255327007024), (42.77494446285655, 67.08002183371367), (51.64470673489732, 67.69104803592965)], [(35.12095907101471, 27.15749389400972), (31.75129213825791, 30.19546699524588), (26.215204341773568, 29.302416006305723),
+(26.93452205610423, 24.901745986763792), (30.315303322659318, 22.02936304582731), (35.27374398560093, 24.26036366280309)], [(32.528754250420356, 57.69780243670025), (28.313303397591152, 63.28626566916881), (24.102621312204185, 55.811712485324186), (31.36007759555655, 52.151105121740166), (35.08165994775537, 59.15012912997044)], [(46.35828309306213, 93.82841811441833), (40.31772362336212, 97.71332853579531), (42.325188850049045, 92.02551391794735), (46.19383448093302, 85.95255287587825)], [(70.98888870110534, 55.04464006889236), (70.75937018370402, 60.75416275184507), (67.26015698606753, 62.183278611218675), (62.48484521406049, 58.389847083444494)], [(98.23879285623912, 60.5253360275126), (92.74967257228046, 63.02381159882326), (88.6495775114501, 60.92296591340397), (89.29383198503096, 54.13102898882416), (96.33872527928702, 55.60764443439465)], [(74.08492632660965, 30.020607431550328), (73.09853785932216, 32.64130066638296), (69.50406841936571, 33.44000428633526), (64.4592709216783, 30.640108827635107), (70.357613979795, 26.655419171674286)], [(38.99179035257599, 65.15884784260665), (38.81337851179376, 68.8658824919724), (31.458049313429587, 71.68436934070661), (28.963986063713953, 66.47629363777338), (33.92574901360399, 61.92718189363565)], [(68.496762729322, 78.77127241304305), (66.06239758158114, 83.50880600503257), (62.566149465850366, 84.15750526892919), (57.10094532772577, 84.42821440279312),
+(58.11387243001579, 78.41156950793977), (62.858697957893014, 73.57769569582669)], [(86.51054183631422, 51.84451454948209), (74.90077191174923, 56.911282685480074), (75.77729276359969, 49.67227158702777)], [(37.79009988995943, 29.883315739505683), (37.743139203733456, 36.84293914714557), (32.955941218786386, 36.673669531053015)], [(100.86590221817602, 55.037231314984616), (94.97744155982615, 58.12654939527161), (92.96009515517073, 45.50655400780197), (105.31653942393059, 47.20966349195742)], [(51.81528497726535, 23.706649884839216), (47.812212657199304, 27.266648262012986), (43.829692995866566, 28.44732702670832), (39.08707204587909, 24.226970962842188), (40.95743355278216, 20.165168414444334), (46.39753069133169, 18.737276641201394), (48.88185095873331, 21.4456354765303)], [(44.14313407834957, 49.356762815690516), (45.70826700798642, 55.1219127430466), (40.83996201704601, 57.91347166025867), (33.51539216367227, 53.56703889288411), (40.400915770418294, 49.82914787441269)]]
+"""
 
 
