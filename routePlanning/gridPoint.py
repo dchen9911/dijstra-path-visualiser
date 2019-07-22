@@ -1,11 +1,14 @@
+from settings import *
+
 class gridPoint:
     
     def __init__(self,x,y):
         self.x = x
         self.y = y
         self.visited = False
-        self.distance = 100000000 # some arbitrarily large distance
+        self.distance = LARGE_DISTANCE + 1 # some arbitrarily large distance
         self.parent = None
+        self.accessible = True
     
     def __lt__(self, other):
         return self.distance <= other.distance
@@ -31,3 +34,11 @@ class gridPoint:
     def getParent(self):
         return self.parent
 
+    def isAccessible(self):
+        return self.accessible
+    
+    def setNotAccessible(self):
+        self.accessible = False
+    
+    def setAccessible(self):
+        self.accessible = True
