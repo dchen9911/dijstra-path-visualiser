@@ -8,7 +8,7 @@ class gridPoint:
         self.visited = False
         self.distance = LARGE_DISTANCE + 1 # some arbitrarily large distance
         self.parent = None
-        self.accessible = True
+        self.accessible = True # i.e. is it in the flyzone and not in a noflyzone
     
     def __lt__(self, other):
         return self.distance <= other.distance
@@ -42,3 +42,10 @@ class gridPoint:
     
     def setAccessible(self):
         self.accessible = True
+
+    def addIncidentVert(self, v):
+        self.incidentVertices.append(v)
+    
+    def getIncidentVerts(self):
+        return self.incidentVertices
+
