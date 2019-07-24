@@ -1,7 +1,6 @@
-# TO DO: Check that path doesnt cut across no fly zone 
-#      - This can be done quite easily by making search range just 1, OR more difficultly by dynamically changing the path
-#      - Checking if line crosses a shape is hella time consuming too
 # TO DO: Make 3d (somehow without requiring a shitton of time)
+# TO DO: increase efficiency by only having a 1 search range and then just go along the path, drawing lines and checking if it crosses a shape
+# TO DO: Make sure a line segment doesn't cross the geofence and no flyzones: keep subdividing into smaller and smaller squares and applying dijstras
 
 import numpy as np
 import matplotlib
@@ -35,7 +34,9 @@ class routePlanning:
         self.waypoints = []
         self.rawWaypoints = rawWaypoints
         self.prevPositions = []
+        self.gridScanDistances = []
 
+        # initailsie the no fly zones and waypoints
         for zone in noFlyZones:
             # create a polygon from the no fly zone and display it as a patch
             zonePoly = Polygon(zone)
@@ -71,18 +72,18 @@ class routePlanning:
                 point = Point(x,y)
                 if not self.flyZone.contains(point): # if not within geofence, then also make it inaccessible
                     self.grid[y][x].setNotAccessible()
+        
+        for i in range(-SEARCH_RANGE, SEARCH_RANGE + 1):
+            tmp = []
+            for j in range(-SEARCH_RANGE, SEARCH_RANGE + 1):
+                tmp.append((i ** 2 + j**2)**0.5)
+            self.gridScanDistances.append(tmp)
+
         print("Finished preprocessing")
         
-    # greedyish method that tries to always move closer to endpoint if possible
     # startPoint and endPoint are tuples of floats representing coords in the form (x,y)
-    def planRoute(self, startPoint, endPoint, method = 'g'):
-        # pre-process all points and check how far away they are from the endpoint
-        # this block can be moved to init
-        self.gridDistances = 2*max(self.height, self.width)*np.ones((self.height, self.width)) # initialise them as very far away
-        for x in range(0, self.width):
-            for y in range(0, self.height):
-                self.gridDistances[y][x] = abs(endPoint[0] - x)**2 + abs(endPoint[1] - y) ** 2
-        
+    def planRoute(self, startPoint, endPoint, method = 'd'):
+
         self.prevPositions.append(startPoint)
         # self.dijkstraFindPath(endPoint)
         
@@ -93,41 +94,51 @@ class routePlanning:
         totalDist = totalDist + self.dijkstraFindPath(self.rawWaypoints[1])
         self.gridReset()
         
+        waypointDistances = {}
+        timebig = time.time_ns()
+        # preprocess to find distance between any two points
+        for i in range(1, len(self.rawWaypoints)):
+            for j in range(i + 1, len(self.rawWaypoints)):
+                self.prevPositions.append(self.rawWaypoints[i])
+                dist = self.dijkstraFindPath(self.rawWaypoints[j], False)
+                del self.prevPositions[-1]
+                waypointDistances[(i,j)] = dist # store the distance in a dictionary
+                waypointDistances[(j,i)] = dist
+                self.gridReset()
+        print("Dijstra preprocessing time: " + str((time.time_ns() - timebig)/1000000000))
+        
         # now do all permutations
         numList = [x for x in range(2, len(self.waypoints))]
         permList = list(itertools.permutations(numList))
 
         minDist = LARGE_DISTANCE
         minPerm = None
-        startIndex = len(self.prevPositions)
         for perm in permList:
             dist = 0
+            prevWaypoint = None
             for x in perm:
-                dist = dist + self.dijkstraFindPath(self.rawWaypoints[x])
-                self.gridReset()
+                if prevWaypoint == None:
+                    prevWaypoint = 1 
+                dist = dist + waypointDistances[(prevWaypoint,x)]
                 if dist > minDist:
                     break
+                prevWaypoint = x
+                i = i + 1
+
             if dist < minDist:
                 minDist = dist
                 minPerm = perm
-            del self.prevPositions[startIndex:len(self.prevPositions)] # delete all the points that were added
         
+        timebig = time.time_ns()
         for x in minPerm:
             totalDist = totalDist + self.dijkstraFindPath(self.rawWaypoints[x])
             self.gridReset()
         totalDist = totalDist + self.dijkstraFindPath(endPoint)
+        print("Time that can be shortened with a dictionary: " + str((time.time_ns() - timebig)/1000000000))
         print("Total distance: " + str(totalDist))
 
 
-        """
-        if method == 'd':
-            
-        else:
-            self.greedyFindPath(endPoint)
-        return
-        """
-
-    def dijkstraFindPath(self, endPoint):
+    def dijkstraFindPath(self, endPoint, append = True):
         startPoint = self.prevPositions[-1]
         self.grid[startPoint[1]][startPoint[0]].setDistance(0)
         pq = MinHeap()
@@ -141,6 +152,8 @@ class routePlanning:
             currGridPoint = pq.del_min()
             if currGridPoint.getDistance() > LARGE_DISTANCE: # these are the points that cannot be reached from the start point
                 print("points covered: " + str(count))
+                print("Endpoint cannot be reached")
+                raise Exception()
                 break
             currGridPoint.visit()
             currX = currGridPoint.x
@@ -149,10 +162,14 @@ class routePlanning:
             if (currX, currY) == endPoint: # if we've reached the endpoint, then its okay to stop
                 break
             # go through all the neighbours of the current point
-            for x in range(currX - SEARCH_RANGE, currX + SEARCH_RANGE + 1):
-                for y in range(currY - SEARCH_RANGE, currY + SEARCH_RANGE + 1):
+            for i in range(-SEARCH_RANGE, SEARCH_RANGE + 1):
+                y = i + currY
+                for j in range(- SEARCH_RANGE,  SEARCH_RANGE + 1):
+                    x = j + currX
+
                     if x < 0 or x >= WIDTH or y < 0 or y >= HEIGHT : # check if out of bounds
                         continue
+
                     # check if point has been visited and whether it is accessible or not
                     currPoint = self.grid[y][x]
                     if currPoint.beenVisited() or not currPoint.isAccessible():
@@ -169,7 +186,7 @@ class routePlanning:
                             continue
 
                     oldDist = currPoint.getDistance()
-                    newDist = currGridPoint.getDistance() + (abs(x - currX)**2 + abs(y - currY)**2) ** 0.5
+                    newDist = currGridPoint.getDistance() + self.gridScanDistances[i + SEARCH_RANGE][j + SEARCH_RANGE]
                     if newDist < oldDist:
                         currPoint.setDistance(newDist)
                         pq.insert(currPoint, currPoint.getDistance())
@@ -179,6 +196,7 @@ class routePlanning:
         endGridPoint = self.grid[endPoint[1]][endPoint[0]]
         if endGridPoint.getDistance() > LARGE_DISTANCE:
             print("no path could be found")
+            raise Exception()
             return
         startGridPoint = self.grid[startPoint[1]][startPoint[0]]
 
@@ -187,6 +205,7 @@ class routePlanning:
         while endGridPoint != startGridPoint:
             if endGridPoint == None:
                 print("no path could be found")
+                raise Exception()
                 return
 
             tempPositions.append((endGridPoint.x, endGridPoint.y))
@@ -196,54 +215,9 @@ class routePlanning:
         # reverse them, append onto list then calculate distance
         for x in range(len(tempPositions) - 1, -1, -1):
             totalDistance = totalDistance + (abs(self.prevPositions[-1][0] - tempPositions[x][0])**2 + abs(self.prevPositions[-1][1] - tempPositions[x][1])**2) ** 0.5
-            self.prevPositions.append(tempPositions[x])
+            if append:
+                self.prevPositions.append(tempPositions[x])
         return totalDistance
-
-    def greedyFindPath(self,endPoint):
-        count = 0
-            
-        while True:
-            if count > 20000 or len(self.prevPositions) == 0: # some arbitrarily large number after which a solution probs doesnt exist OR we backtrack back to the beginning with no options
-                print("no path found")
-                return
-
-            # visit the current point
-            currPos = self.prevPositions[-1]
-            currPoint = self.grid[currPos[1]][currPos[0]]
-            currPoint.visit()
-
-            continueFlag = False
-            # check if we have reached the end yet or are in a no fly zone
-            if currPos == endPoint:
-                print("Path found")
-                break
-            else:
-                # check if point has been visited and it is accessible or not
-                if not currPoint.isAccessible():
-                    del self.prevPositions[-1] # remove the previous addition to the list
-                    continue
-
-            possibleMovesAndDistance = []
-            # get the distance from end point 
-            for x in range(currPos[0] - SEARCH_RANGE, currPos[0] + SEARCH_RANGE + 1):
-                for y in range(currPos[1] - SEARCH_RANGE, currPos[1] + SEARCH_RANGE + 1): 
-                    if x < 0 or x >= WIDTH or y < 0 or y >= HEIGHT or self.grid[y][x].beenVisited(): # check if we've already visited or out of bounds
-                        continue
-                    possibleMovesAndDistance.append([(x,y), self.gridDistances[y][x]])
-            
-            if len(possibleMovesAndDistance) == 0: # this means there are no more possible moves
-                print("No possible moves so backtrack?")
-                del self.prevPositions[-1]
-                continue
-
-            possibleMovesAndDistance.sort(key = lambda x:x[1]) # sort in ascending order
-
-            # add the one that has the shortest distance away from the endpoint
-            self.prevPositions.append(possibleMovesAndDistance[0][0])
-
-            count = count + 1
-        print("number of steps: " + str(count))
-        return
 
     def gridReset(self):
         for x in range(0, WIDTH):
@@ -343,9 +317,6 @@ def generateRandomWaypoints(n, noFlyZones):
             waypoints.append((x,y))
     
     return waypoints
-        
-
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Plans the route')
@@ -360,23 +331,28 @@ if __name__ == "__main__":
     else:
         while True:
             noFlyZones = generateRandomNoFlyZones(POLYGON_NUMBER,POLYGON_SIZE)
-            waypoints = generateRandomWaypoints(5, noFlyZones) # keep trying to generate valid waypoints
+            waypoints = generateRandomWaypoints(NUMBER_OF_WAYPOINTS, noFlyZones) # keep trying to generate valid waypoints
             if waypoints != None:
                 break
     print(waypoints)
     print()
     print(noFlyZones)
-
+    time1 = time.time_ns()
     routePlanningObj = routePlanning(flyZone, noFlyZones, waypoints)
+    preProcessingTime = (time.time_ns() - time1)/1000000000
+    print("Preprocessing time: " + str(preProcessingTime))
     if args['dijkstra']:
         routePlanningObj.planRoute((2,2), (WIDTH - 3, HEIGHT - 3), 'd')
     else:
         routePlanningObj.planRoute((2,2), (WIDTH - 3, HEIGHT - 3))
-    
+    planTime = (time.time_ns() - time1)/1000000000 - preProcessingTime
+    print("Total route planning time in seconds: "+ str(planTime))
     routePlanningObj.createMap()
 
 """
     Extremely good edge case to consider
+    noFlyZones = [[(64.35877176192193, 82.45924642930628), (53.76037785714636, 103.69192029914122), (57.799999960129824, 81.00896430470684)], [(34.696505057831864, 90.5705291381587), (37.2881465919467, 92.77717928805147), (31.53420829735762, 97.73093472284124), (29.54308976911873, 96.83814913789026), (23.06555672364768, 95.05120873313732), (29.20814936288664, 89.98546311229313), (28.497104545185472, 81.16853315028357)], [(101.99106468256493, 19.123695789838855), (96.81324224464176, 22.67664610428111), (92.63106634645374, 18.81458246410471), (86.80035937219176, 24.126988931940293), (81.20731915143767, 16.401130012129315), (85.82403678400779, 7.0151587968875795), (93.15941694106131, 13.00353598795788)], [(56.119682814611785, 94.12363546092249), (50.181202010934555, 106.49041593794382), (48.52102117871587, 89.32643869447885)], [(46.211944555288895, 53.33212967194265), (36.783988600089316, 62.72765104070729), (30.813103090091595, 62.794543560530165), (26.52838238405523, 59.85768693564278), (21.654507591322627, 57.444760003659596), (24.949599129969833, 51.25821247637504), (32.95980515402602, 40.84201218729662)], [(28.896097311987624, 16.36963573789569), (25.041577440702405, 19.790832407643883), (21.975812189691773, 23.99925486739933), (10.004005861363495, 20.929211209343315), (8.642995515662754, 15.06485603456789), (14.47991428139322, 6.959979492513325), (23.749038941555998, 7.7719856525971585)], [(61.23254897028023, 9.089993088638147), (71.39058682635292, 14.266866152134318), (66.33937354100442, 22.19389883184396), (54.526865648558434, 23.382487962187355), (56.26247002548984, 9.720011119736343), (55.02125294931314, -0.37721558268333055), (61.12572326791406, 3.020258510683947)], [(96.24813443795695, 70.22943646460412), (88.12545476318911, 84.19353160446984), (82.25805775462439, 73.54527824246925), (87.13448884238521, 66.00676252551206), (96.79779835745603, 59.07729457876697)], [(76.21745828018157, 69.4113175669618), (73.4296494645441, 85.52062008578466), (66.76750427437754, 80.37913596399409), (51.898326117053344, 74.1731022791034), (67.99739839731885, 68.27246005544464)], [(94.90006566905254, 26.008295346567987), (84.44698738688959, 34.70492466985988), (80.11586439160969, 37.13019569868066), (74.88441314008861, 28.718765629549914), (70.57851332215073, 20.770818070519212), (79.88598271116159, 15.739377334255591), (89.0560753600714, 23.13531371013926)]]
+    waypoints = [(56, 60), (91, 43), (10, 41), (53, 44), (27, 79)]
     noFlyZones = [[(53.92467898230293, 50.905121078506966), (52.62260758551787, 62.8942659373792), (46.27618221864204, 50.5497070023759), (47.48715243253119, 37.136872248352006), (64.21489658733563, 44.210027470531855)], [(65.25735220121798, 13.913370847904874), (54.61252076809604, 20.968176814070276), (42.96320025094971, 25.342306457861408), (41.58939141413785, 14.388539308474764), (46.59262368088967, 6.76622804823079), (54.997070889985196, 6.4075630571338)], [(87.98294335977342, 90.32079853159945), (73.09271456833231, 97.06991841530086), (63.21400994225273, 93.86106070652957), (68.81839996496718, 81.94950909550245), (80.25719865739299, 85.13585051458573)], [(100.16793582693788, 6.909950658441927), (94.11255207263643, 14.073410561444186), (83.16509823497191, 9.183700089833671), (87.10561079823182, 0.34042690013851384), (97.70372234976503, -3.4622141761992804)], [(40.41349153246735, 73.08783428444481), (31.377286938812194, 80.08299204179757), (42.11259906295611, 66.73805329739263)], [(83.24132227357995, 57.568645858900744), (72.64614509242696, 62.87038206802974), (61.45091110437718, 58.04031902840369), (72.12025492378133, 50.98289651424176), (75.54969498942043, 40.4679761563251), (84.14361862582714, 48.46278723194654)], [(57.173369646820454, 68.86794780234784), (47.11264226072787, 72.96716947966489), (30.804096694160037, 74.51695033728022), (38.117464885810456, 59.26359176212536), (56.21037355078592, 64.45422163076718)], [(37.12212981830822, 92.75331799803605), (33.958459745116265, 100.90538106829243), (20.148996615241686, 106.94000306447127), (24.694711521547422, 92.58681986260963), (25.578421665631417, 80.0157776056027), (37.23182801526152, 81.1577145222592), (37.07809013221568, 90.20662125867214)], [(57.304392184911165, 27.338005657390937), (58.00137229578584, 39.22379057673793), (41.70029192591472, 42.34401430263042), (45.56951842198082, 26.340248872787015)], [(25.164671486032965, 28.819996909323343), (23.503676615376655, 44.43445709172494), (9.50814498192786, 41.92999015135076), (16.05669735556644, 29.69883177869935), (10.865947302583056, 29.63323070313422), (16.183463971218803, 26.593296358093735), (15.862606790067051, 16.79026918696951), (26.964671198718975, 16.017360691336872)]]
 """
 
