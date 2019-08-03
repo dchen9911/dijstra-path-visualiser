@@ -1,6 +1,5 @@
 # TO DO: Make 3d (somehow without requiring a shitton of time)
 # TO DO: increase efficiency by only having a 1 search range and then just go along the path, drawing lines and checking if it crosses a shape
-# TO DO: Make sure a line segment doesn't cross the geofence and no flyzones: keep subdividing into smaller and smaller squares and applying dijstras
 
 import numpy as np
 import matplotlib
@@ -24,6 +23,7 @@ from shapely.geometry import Point, LineString
 from gridPoint import gridPoint
 
 class routePlanning:
+    
     def __init__(self, flyZone, noFlyZone, rawWaypoints):
         self.height = HEIGHT # hard coded values for size of the grid
         self.width = WIDTH
@@ -33,10 +33,10 @@ class routePlanning:
         self.flyZone = Polygon(flyZone)
         self.waypoints = []
         self.rawWaypoints = rawWaypoints
-        self.prevPositions = []
+        self.finalPath = []
         self.gridScanDistances = []
 
-        # initailsie the no fly zones and waypoints
+        # initialise the no fly zones and waypoints
         for zone in noFlyZones:
             # create a polygon from the no fly zone and display it as a patch
             zonePoly = Polygon(zone)
@@ -73,6 +73,7 @@ class routePlanning:
                 if not self.flyZone.contains(point): # if not within geofence, then also make it inaccessible
                     self.grid[y][x].setNotAccessible()
         
+        # pre-calculate distances in a search range grid
         for i in range(-SEARCH_RANGE, SEARCH_RANGE + 1):
             tmp = []
             for j in range(-SEARCH_RANGE, SEARCH_RANGE + 1):
@@ -83,42 +84,39 @@ class routePlanning:
         
     # startPoint and endPoint are tuples of floats representing coords in the form (x,y)
     def planRoute(self, startPoint, endPoint, method = 'd'):
-
-        self.prevPositions.append(startPoint)
-        # self.dijkstraFindPath(endPoint)
-        
+        self.finalPath.append(startPoint)
         totalDist = 0
-        # start the path finding
-        totalDist = totalDist + self.dijkstraFindPath(self.rawWaypoints[0])
-        self.gridReset()
-        totalDist = totalDist + self.dijkstraFindPath(self.rawWaypoints[1])
-        self.gridReset()
+
+        # start the path finding by finding distance to first two paths
+        totalDist = totalDist + self.dijkstraFindPath(startPoint, self.rawWaypoints[0], self.finalPath)
+        totalDist = totalDist + self.dijkstraFindPath(self.rawWaypoints[0], self.rawWaypoints[1], self.finalPath)
         
         waypointDistances = {}
+        allPaths = {}
         timebig = time.time_ns()
         # preprocess to find distance between any two points
         for i in range(1, len(self.rawWaypoints)):
             for j in range(i + 1, len(self.rawWaypoints)):
-                self.prevPositions.append(self.rawWaypoints[i])
-                dist = self.dijkstraFindPath(self.rawWaypoints[j], False)
-                del self.prevPositions[-1]
+                pointsInPath = []
+                dist = self.dijkstraFindPath(self.rawWaypoints[i], self.rawWaypoints[j], pointsInPath)
                 waypointDistances[(i,j)] = dist # store the distance in a dictionary
                 waypointDistances[(j,i)] = dist
-                self.gridReset()
+                allPaths[(i,j)] = pointsInPath  # also store the path taken
+    
         print("Dijstra preprocessing time: " + str((time.time_ns() - timebig)/1000000000))
         
-        # now do all permutations
+        # now do all permutations and check the distance required for every perm
         numList = [x for x in range(2, len(self.waypoints))]
         permList = list(itertools.permutations(numList))
 
         minDist = LARGE_DISTANCE
         minPerm = None
+        
+        # go through each permutation
         for perm in permList:
             dist = 0
-            prevWaypoint = None
+            prevWaypoint = 1 # always start out at the first waypoint
             for x in perm:
-                if prevWaypoint == None:
-                    prevWaypoint = 1 
                 dist = dist + waypointDistances[(prevWaypoint,x)]
                 if dist > minDist:
                     break
@@ -128,31 +126,39 @@ class routePlanning:
             if dist < minDist:
                 minDist = dist
                 minPerm = perm
+                
+        prevWaypoint = 1
+        for currWaypoint in minPerm:
+            if currWaypoint < prevWaypoint:
+                allPaths[(currWaypoint, prevWaypoint)].reverse()
+                self.finalPath = self.finalPath + allPaths[(currWaypoint, prevWaypoint)]
+            elif prevWaypoint < currWaypoint:
+                self.finalPath = self.finalPath + allPaths[(prevWaypoint, currWaypoint)]
+            else:
+                print("current and previous waypoints are the same")
+                raise Exception()
+            totalDist = totalDist + waypointDistances[(prevWaypoint, currWaypoint)]
+            prevWaypoint = currWaypoint
         
-        timebig = time.time_ns()
-        for x in minPerm:
-            totalDist = totalDist + self.dijkstraFindPath(self.rawWaypoints[x])
-            self.gridReset()
-        totalDist = totalDist + self.dijkstraFindPath(endPoint)
-        print("Time that can be shortened with a dictionary: " + str((time.time_ns() - timebig)/1000000000))
+        totalDist = totalDist + self.dijkstraFindPath(self.finalPath[-1], endPoint, self.finalPath)
         print("Total distance: " + str(totalDist))
+        self.optimiseFinalPath()
 
 
-    def dijkstraFindPath(self, endPoint, append = True):
-        startPoint = self.prevPositions[-1]
+    def dijkstraFindPath(self, startPoint, endPoint, pointsInPath, checkLineIntersection = False):
         self.grid[startPoint[1]][startPoint[0]].setDistance(0)
         pq = MinHeap()
         # create the priority queue
         for x in range(0, WIDTH):
             for y in range (0, HEIGHT):
-                self.grid[y][x].setDistance(self.grid[y][x].getDistance())
                 pq.insert(self.grid[y][x], self.grid[y][x].getDistance())
+        
         count = 0
         while pq.counter != 0:
             currGridPoint = pq.del_min()
             if currGridPoint.getDistance() > LARGE_DISTANCE: # these are the points that cannot be reached from the start point
                 print("points covered: " + str(count))
-                print("Endpoint cannot be reached")
+                print("Destination point cannot be reached")
                 raise Exception()
                 break
             currGridPoint.visit()
@@ -161,6 +167,7 @@ class routePlanning:
 
             if (currX, currY) == endPoint: # if we've reached the endpoint, then its okay to stop
                 break
+            
             # go through all the neighbours of the current point
             for i in range(-SEARCH_RANGE, SEARCH_RANGE + 1):
                 y = i + currY
@@ -174,8 +181,7 @@ class routePlanning:
                     currPoint = self.grid[y][x]
                     if currPoint.beenVisited() or not currPoint.isAccessible():
                         continue
-
-                    if CHECK_LINE_INTERSECTION: # option that adds a shitton of time to the algo
+                    if checkLineIntersection: # option that adds a shitton of time to the algo
                         line = LineString([[currX, currY], [x,y]])
                         continueFlag = False
                         for noFlyZone in self.softNoFlyZones:
@@ -193,31 +199,70 @@ class routePlanning:
                         currPoint.setParent(currGridPoint)
             count = count + 1
 
+        # check if the endpoint has actually been visited (probs not necessary but why not)
         endGridPoint = self.grid[endPoint[1]][endPoint[0]]
         if endGridPoint.getDistance() > LARGE_DISTANCE:
             print("no path could be found")
             raise Exception()
             return
-        startGridPoint = self.grid[startPoint[1]][startPoint[0]]
-
-        tempPositions = []
-        # now put everything into the array
+        
+        # now find the shortest path by going up the tree
+        startGridPoint = self.grid[startPoint[1]][startPoint[0]] 
+        tempPath = []
         while endGridPoint != startGridPoint:
             if endGridPoint == None:
-                print("no path could be found")
+                print("no path could be found between following two points: ", end = "")
+                print(startPoint, end = "")
+                print(endPoint)
                 raise Exception()
                 return
-
-            tempPositions.append((endGridPoint.x, endGridPoint.y))
+            tempPath.append((endGridPoint.x, endGridPoint.y))
             endGridPoint = endGridPoint.getParent()
-        
+        tempPath.append((startGridPoint.x, startGridPoint.y))
+
         totalDistance = 0
         # reverse them, append onto list then calculate distance
-        for x in range(len(tempPositions) - 1, -1, -1):
-            totalDistance = totalDistance + (abs(self.prevPositions[-1][0] - tempPositions[x][0])**2 + abs(self.prevPositions[-1][1] - tempPositions[x][1])**2) ** 0.5
-            if append:
-                self.prevPositions.append(tempPositions[x])
+        for x in range(len(tempPath) - 2, -1, -1):
+            totalDistance = totalDistance + (abs(tempPath[x+1][0] - tempPath[x][0])**2 + abs(tempPath[x+1][1] - tempPath[x][1])**2) ** 0.5
+            pointsInPath.append(tempPath[x])
+
+        self.gridReset()
         return totalDistance
+
+    # make sure final path doesnt cross any no flyzones and also make the path smoother
+    def optimiseFinalPath(self):
+        x = 1   # index of current point
+        waypointIndex = 0
+
+        while True:
+            if x + 4 >= len(self.finalPath):
+                break # do smth more efficient later 
+            nextPoint = None
+            for i in range(0,5):
+                if 
+
+            # make a line from the previous point to the one thats three ahead then check if it intersects something
+            line = LineString([[self.finalPath[x - 1][0], self.finalPath[x - 1][1]], [self.finalPath[x + 4][0],self.finalPath[x + 4][1]]])
+            intersectFlag = False
+            for noFlyZone in self.softNoFlyZones:
+                if line.intersects(noFlyZone):
+                    intersectFlag = True
+                    break
+            del self.finalPath[x + 3]
+            del self.finalPath[x + 2]
+            del self.finalPath[x + 1]
+            # if line does intersect, then use dijkstra to find a non-intersecting path
+            if intersectFlag:
+                print("line intersects, x = " + str(x))
+                print("iterNo")
+                tmpPath = []
+                self.dijkstraFindPath(self.finalPath[x], self.finalPath[x + 1], tmpPath, True)
+                del tmpPath[-1]
+                self.finalPath = self.finalPath[:x] + tmpPath + self.finalPath[x:]
+                x = x + len(tmpPath) + 1
+            else:
+                del self.finalPath[x]
+
 
     def gridReset(self):
         for x in range(0, WIDTH):
@@ -264,8 +309,8 @@ class routePlanning:
         ax.add_patch(flyZonePatch)
         
         # now lets show the path
-        xvals = [row[0] for row in self.prevPositions]
-        yvals = [row[1] for row in self.prevPositions]
+        xvals = [row[0] for row in self.finalPath]
+        yvals = [row[1] for row in self.finalPath]
 
         plt.plot(xvals,yvals,'.-')
         plt.show()
