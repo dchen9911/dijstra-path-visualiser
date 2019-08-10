@@ -2,9 +2,10 @@ from settings import *
 
 class gridPoint:
     
-    def __init__(self,x,y):
+    def __init__(self,x,y,z):
         self.x = x
         self.y = y
+        self.z = z
         self.visited = False
         self.distance = LARGE_DISTANCE + 1 # some arbitrarily large distance
         self.parent = None

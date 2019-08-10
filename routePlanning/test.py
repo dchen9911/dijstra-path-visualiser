@@ -1,9 +1,4 @@
-def foo(a):
-    a.append("hi")
-
-b = [1,2,3,4]
-b = b + b
-print(b)
+import random
 for i in range(0, 5):
-    print(i)
-    i = i -1
+    num = random.randrange(0,10)/10
+    print(num)
