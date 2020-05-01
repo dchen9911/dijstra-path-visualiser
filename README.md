@@ -13,4 +13,4 @@ Setup can be changed by changing variables in `settings.py` as well as limited c
 
 3. Git clone the repo
 
-    ` git clone git@github.com:vkuo3446/USYD-UAV2020.git `
+    ` git clone git@github.com:dchen9911/dijstra-path-visualiser.git `
