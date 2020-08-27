@@ -3,14 +3,4 @@ Implementation and visualisation of Dijkstra shortest path finding algorithm (wi
 
 Setup can be changed by changing variables in `settings.py` as well as limited command line options
 
-## Installation:
-
-1. Open up terminal
-
-2. Change directory to your desired path
-
-    ` cd /your/desired/path`
-
-3. Git clone the repo
-
-    ` git clone git@github.com:dchen9911/dijstra-path-visualiser.git `
+Run `routePlanning.py` to view
